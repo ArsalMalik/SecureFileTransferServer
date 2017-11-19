@@ -27,32 +27,39 @@ import javax.crypto.IllegalBlockSizeException;
 import javax.crypto.NoSuchPaddingException;
 
 public class FileTransferProtocolServer {
+	
+	private PrivateKey serverPrivateKey;
+	
+	public PrivateKey getServerPrivateKey() {
+		return serverPrivateKey;
+	}
+
+	public void setServerPrivateKey(PrivateKey serverPrivateKey) {
+		this.serverPrivateKey = serverPrivateKey;
+	}
+
 	public long generateRandomNonce() {
 		
 		SecureRandom random = new SecureRandom();
 		return random.nextLong();
 	}
 	
-	public void uploadFileToServer(Socket socket, DataOutputStream dos, String fileName) throws IOException {
-		// Client uploads to server
-		FileInputStream fis = new FileInputStream(fileName);
-		BufferedInputStream bis = new BufferedInputStream(fis);
-		byte[] fileByte = new byte[64];
-		int bytesRead = 0;
-		while(bytesRead != -1) {
-			bytesRead = bis.read(fileByte, 0, fileByte.length);
-			if(bytesRead > 0)
-			{
-				dos.write(fileByte,0,bytesRead);
-			}
+	public void receiveFileFromClient(Socket socket, DataInputStream dis, String fileName) throws IOException, InvalidKeyException, NoSuchAlgorithmException, NoSuchPaddingException, IllegalBlockSizeException, BadPaddingException {
+		// Client uploads file to server
+		
+		int IVlength = dis.readInt();
+		byte[] encryptedIV = new byte[IVlength];
+		
+		if(IVlength>0){
+			dis.read(encryptedIV, 0, encryptedIV.length);
+			//dis.close();
+
+			//String encrypted = new String(data, 0, data.length);
+			//System.out.println(encrypted);
+			long decryptedNonce = this.decrypted(this.getServerPrivateKey(), encryptedIV);
+			FileServer.showMessage("The decrypted Nonce is: " + decryptedNonce + "\n\n");
 		}
-		bis.close();
-		fis.close();
-		dos.flush();
-	}
-	
-	public void downloadFileFromServer(Socket socket, DataInputStream dis, String fileName) throws IOException {
-		// Client downloads file from server
+		
 		FileOutputStream fos = new FileOutputStream(fileName);
 		BufferedOutputStream bos = new BufferedOutputStream(fos);
 		byte[] fileByte = new byte[64];
@@ -92,5 +99,18 @@ public class FileTransferProtocolServer {
 	    buffer.put(bytes);
 	    buffer.flip();//need flip 
 	    return buffer.getLong();
+	}
+	
+	public long getEncryptionKey(long sessionKey) {
+		if(sessionKey > 0) {
+			return sessionKey - 1;
+		}
+		return sessionKey + 1;
+	}
+	public long getIntegrityKey(long sessionKey) {
+		if(sessionKey > 0) {
+			return sessionKey - 2;
+		}
+		return sessionKey + 2;
 	}
 }

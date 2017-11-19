@@ -1,3 +1,4 @@
+import java.io.IOException;
 import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
 import java.security.spec.InvalidKeySpecException;
@@ -8,7 +9,7 @@ import javax.crypto.NoSuchPaddingException;
 import javax.swing.JFrame;
 
 public class FileServerMain {
-	public static void main(String[] args) throws InvalidKeyException, NoSuchAlgorithmException, NoSuchPaddingException, IllegalBlockSizeException, BadPaddingException, InvalidKeySpecException{
+	public static void main(String[] args) throws InvalidKeyException, NoSuchAlgorithmException, NoSuchPaddingException, IllegalBlockSizeException, BadPaddingException, InvalidKeySpecException, IOException{
 		FileServer server = new FileServer();										//Create new server class instance
 		server.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);				//Exit the window on closing connection
 		server.startRunning();												//Invoke the function to set up everything

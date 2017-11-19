@@ -29,7 +29,7 @@ public class FileServer extends JFrame {
 	//private static final String SERVER_CERT_PATH = "server-certificate.crt";
 	private static final long serialVersionUID = 1L;
 	//private JTextField userText;
-	private JTextArea Window;
+	private static JTextArea Window;
 	private JPanel Panel;
 	//private ObjectOutputStream output;
 	//private ObjectInputStream input;
@@ -43,10 +43,10 @@ public class FileServer extends JFrame {
 	private static DataOutputStream dos;
 	//private static FileInputStream fis;
 	private static BufferedInputStream bis;
-	FileTransferProtocolServer protocol = new FileTransferProtocolServer();
+	private FileTransferProtocolServer protocol = new FileTransferProtocolServer();
 
 	//constructor
-	public FileServer(){
+	public FileServer() throws NoSuchAlgorithmException, InvalidKeySpecException, IOException{
 		//Setting up the GUI
 		setTitle("SERVER - File Transfer Protocol");
 		Window = new JTextArea();			
@@ -63,7 +63,8 @@ public class FileServer extends JFrame {
 		Window.setBorder(BorderFactory.createLineBorder(Color.black));
 		Window.setEditable(false);										//so that no one can edit the chat history 	
 		//userText.setBorder(BorderFactory.createLineBorder(Color.black));
-
+		protocol.setServerPrivateKey(this.getPrivate());
+		
 	}
 
 	//set up server
@@ -76,7 +77,7 @@ public class FileServer extends JFrame {
 					setupStreams();			//Function for setting up i/p & o/p streams
 					receiveNonce(dis);
 					receiveFromClient();		
-
+					
 					//sendCertificate();
 				} catch (EOFException e){
 					showMessage("\n Connection terminated!");    //When user disconnects
@@ -101,24 +102,25 @@ public class FileServer extends JFrame {
 
 
 
-	private void receiveFromClient() throws IOException, ClassNotFoundException {
+	private void receiveFromClient() throws IOException, ClassNotFoundException, InvalidKeyException, NoSuchAlgorithmException, NoSuchPaddingException, IllegalBlockSizeException, BadPaddingException {
 		String message = "-----------------------------------------" 
 				+ "-----------------------------------------";
 		showMessage(message);
-		String downloadFileName = dis.readUTF();
-		protocol.downloadFileFromServer(clientSocket, dis, downloadFileName);
+		String uploadFileName = dis.readUTF();
+		protocol.receiveFileFromClient(clientSocket, dis, uploadFileName);
 	}
 
 	private void receiveNonce(DataInputStream dis) throws IOException, InvalidKeyException, NoSuchAlgorithmException, NoSuchPaddingException, IllegalBlockSizeException, BadPaddingException, InvalidKeySpecException {
 		int len = dis.readInt();
 		byte[] data = new byte[len];
 		if(len>0){
-			dis.readFully(data);
+			dis.read(data, 0, data.length);
 			//dis.close();
 
 			//String encrypted = new String(data, 0, data.length);
 			//System.out.println(encrypted);
-			long decryptedNonce = protocol.decrypted(getPrivate(), data);
+			
+			long decryptedNonce = protocol.decrypted(protocol.getServerPrivateKey(), data);
 			showMessage("The decrypted Nonce is: " + decryptedNonce + "\n\n");
 		}
 
@@ -135,7 +137,7 @@ public class FileServer extends JFrame {
 	}
 
 	//display messages
-	private void showMessage(final String text){
+	public static void showMessage(final String text){
 		SwingUtilities.invokeLater(
 				new Runnable(){
 					public void run(){
@@ -152,10 +154,16 @@ public class FileServer extends JFrame {
 		os.close();
 		dis.close();
 		//fos.close();
-		bos.close();
+		if(bos != null)
+		{
+			bos.close();
+		}
+		dos.flush();
 		dos.close();
 		//fis.close();
-		bis.close();
+		if(bis != null) {
+			bis.close();
+		}
 	}
 
 	private PrivateKey getPrivate() throws IOException, NoSuchAlgorithmException, InvalidKeySpecException{
