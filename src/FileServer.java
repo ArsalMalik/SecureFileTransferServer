@@ -121,6 +121,8 @@ public class FileServer extends JFrame {
 			//System.out.println(encrypted);
 			
 			long decryptedNonce = protocol.decrypted(protocol.getServerPrivateKey(), data);
+			System.out.println("IV at server: "+decryptedNonce);
+			protocol.setSessionKey(decryptedNonce);
 			showMessage("The decrypted Nonce is: " + decryptedNonce + "\n\n");
 		}
 
