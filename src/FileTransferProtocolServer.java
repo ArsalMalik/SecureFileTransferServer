@@ -80,45 +80,46 @@ public class FileTransferProtocolServer {
 			FileServer.showMessage("The decrypted IV is: " + decryptedNonce + "\n\n");
 		}
 		
-		long encryptionNonce = this.getEncryptionKey(this.getIV());
-		System.out.println("Encryption nonce at server : "+encryptionNonce);
+		long encryptionNonce = this.getEncryptionKey(this.getSessionKey());
 		byte[] encryptionKey = this.longToBytes(encryptionNonce);
-		System.out.println("Encryption key at server: "+new String(encryptionKey));
 		int encryptedDataLength = dis.readInt();
+		
+		FileOutputStream fos = new FileOutputStream(fileName);
+		BufferedOutputStream bos = new BufferedOutputStream(fos);
+		
 		if(encryptedDataLength > 0) {
-			byte[] encryptedIVBlock = new byte[encryptedDataLength];
-			dis.read(encryptedIVBlock, 0, encryptedDataLength);
-			System.out.println("IV data block at server: "+new String(encryptedIVBlock));
+			byte[] encryptedBlock = new byte[encryptedDataLength];
+			dis.read(encryptedBlock, 0, encryptedDataLength);
 			MessageDigest md = MessageDigest.getInstance("SHA1");
 			byte[] concatEncrypted = new byte[encryptionKey.length + encryptedIV.length];
 			System.arraycopy(encryptedIV, 0, concatEncrypted, 0, encryptedIV.length);
 			System.arraycopy(encryptionKey, 0, concatEncrypted, encryptedIV.length, encryptionKey.length);
-			System.out.println("Concatenated IV with key at server: "+new String(concatEncrypted));
 			byte[] sha1HashConcat = md.digest(concatEncrypted);
-			byte[] plainTextByte = xor(encryptedIVBlock, sha1HashConcat);
-			System.out.println("plaintext byte: "+ new String(plainTextByte));
+			byte[] plainText = xor(encryptedBlock, sha1HashConcat);
+			bos.write(plainText);
+			bos.flush();
+			
+			while((encryptedDataLength = dis.readInt()) > 0) {
+				byte[] cipherText = new byte[encryptedDataLength];
+				dis.read(cipherText, 0, encryptedDataLength);
+				concatEncrypted = new byte[encryptedBlock.length + encryptionKey.length];
+				System.arraycopy(encryptedBlock, 0, concatEncrypted, 0, encryptedBlock.length);
+				System.arraycopy(encryptionKey, 0, concatEncrypted, encryptedBlock.length, encryptionKey.length);
+				sha1HashConcat = md.digest(concatEncrypted);
+				plainText = xor(cipherText, sha1HashConcat);
+				bos.write(plainText, 0, encryptedDataLength);
+				bos.flush();
+			}
+			bos.close();
+			fos.close();
 		}
-		
-		
-//		
-//		FileOutputStream fos = new FileOutputStream(fileName);
-//		BufferedOutputStream bos = new BufferedOutputStream(fos);
-//		byte[] fileByte = new byte[64];
-//		int bytesRead = 0;
-//		while(bytesRead != -1) {
-//			bytesRead = dis.read(fileByte,0,fileByte.length);
-//			if(bytesRead > 0) {
-//				bos.write(fileByte,0,bytesRead);
-//			}
-//		}
-//		bos.close();
-//		fos.close();
 	}
 	
 	public long decrypted(PrivateKey key, byte[] encrypted) throws NoSuchAlgorithmException, NoSuchPaddingException, InvalidKeyException, IllegalBlockSizeException, BadPaddingException {
-		//Decrypt the nonce
+		//Decrypt the once
 		Cipher ci = Cipher.getInstance("RSA");	
 		ci.init(Cipher.DECRYPT_MODE, key);
+		System.out.println("Encrypted data length at server: "+encrypted.length);
 		byte[] decrypted = ci.doFinal(encrypted);
 		long ldecrypted = bytesToLong(decrypted);
 		//System.err.println(decrypted);
@@ -155,16 +156,17 @@ public class FileTransferProtocolServer {
 		return sessionKey + 2;
 	}
 	
-	 public static byte[] xor(byte[] data1, byte[] data2) {
-	        // make data2 the largest...
-	        if (data1.length > data2.length) {
-	            byte[] tmp = data2;
-	            data2 = data1;
-	            data1 = tmp;
-	        }
-	        for (int i = 0; i < data1.length; i++) {
-	            data2[i] ^= data1[i];
-	        }
-	        return data2;
-	    }
+	public static byte[] xor(byte[] data1, byte[] data2) {
+        // make data2 the largest...
+		byte[] data1Local = data1.clone(), data2Local = data2.clone();
+        if (data1Local.length > data2Local.length) {
+            byte[] tmp = data2Local;
+            data2Local = data1Local;
+            data1Local = tmp;
+        }
+        for (int i = 0; i < data1Local.length; i++) {
+            data2Local[i] ^= data1Local[i];
+        }
+        return data2Local;
+    }
 }
