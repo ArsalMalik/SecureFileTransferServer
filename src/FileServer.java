@@ -61,7 +61,8 @@ public class FileServer extends JFrame {
 		Window.setBackground(Color.LIGHT_GRAY);
 		Window.setForeground(Color.BLUE );
 		Window.setBorder(BorderFactory.createLineBorder(Color.black));
-		Window.setEditable(false);										//so that no one can edit the chat history 	
+		Window.setEditable(false);										//so that no one can edit the chat history
+		Window.setLineWrap(true);
 		//userText.setBorder(BorderFactory.createLineBorder(Color.black));
 		protocol.setServerPrivateKey(this.getPrivate());
 		
@@ -75,15 +76,32 @@ public class FileServer extends JFrame {
 				try{
 					waitForConnection();	//Function for listening and accepting incoming connections
 					setupStreams();			//Function for setting up i/p & o/p streams
-					receiveNonce(dis);
-					receiveFromClient();		
+//					receiveNonce(dis);
+//					receiveFromClient();		
+					String option = dis.readUTF();
+					
+					if(option.equals("List Server Files")) {
+						File homeDir = new File(".");
+						String fileNamesStr = "\n";
+						int i = 0;
+						for(File file: homeDir.listFiles()) {
+							if(!file.isDirectory() && !file.isHidden()) {
+								fileNamesStr = fileNamesStr.concat(file.getName()).concat("\t");
+							}
+						}
+						System.out.println("File names: \n"+fileNamesStr);
+						dos.writeUTF(fileNamesStr);
+						String fileName = dis.readUTF();
+						File file = new File(fileName);
+						protocol.sendFileToClient(socket, dis, dos, file);
+					}
 					
 					//sendCertificate();
 				} catch (EOFException e){
 					showMessage("\n Connection terminated!");    //When user disconnects
-				} catch (ClassNotFoundException e) {
-					// TODO Auto-generated catch block
-					e.printStackTrace();
+//				} catch (ClassNotFoundException e) {
+//					// TODO Auto-generated catch block
+//					e.printStackTrace();
 				} finally {
 					closeAllConnections();						//Function to close all streams	
 				}
@@ -110,22 +128,6 @@ public class FileServer extends JFrame {
 		protocol.receiveFileFromClient(clientSocket, dis, uploadFileName);
 	}
 
-	private void receiveNonce(DataInputStream dis) throws IOException, InvalidKeyException, NoSuchAlgorithmException, NoSuchPaddingException, IllegalBlockSizeException, BadPaddingException, InvalidKeySpecException {
-		int len = dis.readInt();
-		byte[] data = new byte[len];
-		if(len>0){
-			dis.read(data, 0, data.length);
-			//dis.close();
-
-			//String encrypted = new String(data, 0, data.length);
-			//System.out.println(encrypted);
-			
-			long decryptedNonce = protocol.decrypted(protocol.getServerPrivateKey(), data);
-			protocol.setSessionKey(decryptedNonce);
-			showMessage("The decrypted Nonce is: " + decryptedNonce + "\n\n");
-		}
-
-	}
 	private void setupStreams() throws IOException {
 		is = clientSocket.getInputStream();
 		os = clientSocket.getOutputStream();

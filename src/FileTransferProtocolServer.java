@@ -3,9 +3,11 @@ import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -18,6 +20,7 @@ import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
+import java.security.spec.InvalidKeySpecException;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
 import java.util.Random;
@@ -31,6 +34,7 @@ public class FileTransferProtocolServer {
 	
 	private PrivateKey serverPrivateKey;
 	private long sessionKey, IV;
+	private byte[] encryptionKey;
 	
 	
 	public long getSessionKey() {
@@ -57,6 +61,14 @@ public class FileTransferProtocolServer {
 		this.serverPrivateKey = serverPrivateKey;
 	}
 
+	public byte[] getEncryptionKey() {
+		return encryptionKey;
+	}
+
+	public void setEncryptionKey(byte[] encryptionKey) {
+		this.encryptionKey = encryptionKey;
+	}
+
 	public long generateRandomNonce() {
 		
 		SecureRandom random = new SecureRandom();
@@ -80,7 +92,7 @@ public class FileTransferProtocolServer {
 			FileServer.showMessage("The decrypted IV is: " + decryptedNonce + "\n\n");
 		}
 		
-		long encryptionNonce = this.getEncryptionKey(this.getSessionKey());
+		long encryptionNonce = this.getEncryptionNonce(this.getSessionKey());
 		byte[] encryptionKey = this.longToBytes(encryptionNonce);
 		int encryptedDataLength = dis.readInt();
 		
@@ -115,6 +127,49 @@ public class FileTransferProtocolServer {
 		}
 	}
 	
+	public void sendFileToClient(ServerSocket socket, DataInputStream dis, DataOutputStream dos, File file) throws InvalidKeyException, NoSuchAlgorithmException, NoSuchPaddingException, IllegalBlockSizeException, BadPaddingException, InvalidKeySpecException, IOException {
+		
+		this.receiveNonce(dis);
+		int len = dis.readInt();
+		if(len > 0) {
+			byte[] encryptedIV = new byte[len];
+			dis.read(encryptedIV, 0 , encryptedIV.length);
+			System.out.println("At server, IV = "+this.decrypted(this.getServerPrivateKey(), encryptedIV));
+			
+			FileInputStream fis = new FileInputStream(file.getAbsolutePath());
+			BufferedInputStream bis = new BufferedInputStream(fis);
+			long encryptionNonce = this.getEncryptionNonce(this.getSessionKey());
+			System.out.println("Encryption nonce at server: "+encryptionNonce);
+			byte[] encryptionKey = this.longToBytes(encryptionNonce);
+			System.out.println("At server, encryption key: "+new String(encryptionKey));
+			byte[] IVdataBlock = new byte[encryptedIV.length + encryptionKey.length];
+			System.arraycopy(encryptedIV, 0, IVdataBlock, 0, encryptedIV.length);
+			System.arraycopy(encryptionKey, 0, IVdataBlock, encryptedIV.length, encryptionKey.length);
+			MessageDigest md = MessageDigest.getInstance("SHA1");
+			byte[] sha1Hash = md.digest(IVdataBlock);
+			byte[] fileByte = new byte[20];
+			int bytesRead = bis.read(fileByte, 0 , fileByte.length);
+			System.out.println("At server, plaintext: "+new String(fileByte));
+			byte[] xored = xor(fileByte, sha1Hash);
+			dos.writeInt(xored.length);
+			dos.write(xored, 0, xored.length);
+			
+			while(bytesRead != -1) {
+				bytesRead = bis.read(fileByte, 0, bytesRead);
+				if(bytesRead > 0) {
+					byte[] hashedBlock = new byte[xored.length + encryptionKey.length];
+					System.arraycopy(xored, 0, hashedBlock, 0, xored.length);
+					System.arraycopy(encryptionKey, 0, hashedBlock, xored.length, encryptionKey.length);
+					byte[] hashValue = md.digest(hashedBlock);
+					byte[] cipherText = xor(fileByte, hashValue);
+					dos.writeInt(bytesRead);
+					dos.write(cipherText, 0 , bytesRead);
+				}
+			}
+		}
+		
+	}
+	
 	public long decrypted(PrivateKey key, byte[] encrypted) throws NoSuchAlgorithmException, NoSuchPaddingException, InvalidKeyException, IllegalBlockSizeException, BadPaddingException {
 		//Decrypt the once
 		Cipher ci = Cipher.getInstance("RSA");	
@@ -143,7 +198,7 @@ public class FileTransferProtocolServer {
 	    return buffer.getLong();
 	}
 	
-	public long getEncryptionKey(long sessionKey) {
+	public long getEncryptionNonce(long sessionKey) {
 		if(sessionKey > 0) {
 			return sessionKey - 1;
 		}
@@ -169,4 +224,21 @@ public class FileTransferProtocolServer {
         }
         return data2Local;
     }
+	
+	public void receiveNonce(DataInputStream dis) throws IOException, InvalidKeyException, NoSuchAlgorithmException, NoSuchPaddingException, IllegalBlockSizeException, BadPaddingException, InvalidKeySpecException {
+		int len = dis.readInt();
+		byte[] data = new byte[len];
+		if(len>0){
+			dis.read(data, 0, data.length);
+			//dis.close();
+
+			//String encrypted = new String(data, 0, data.length);
+			//System.out.println(encrypted);
+			
+			long decryptedNonce = this.decrypted(this.getServerPrivateKey(), data);
+			this.setSessionKey(decryptedNonce);
+			FileServer.showMessage("The decrypted Nonce is: " + decryptedNonce + "\n\n");
+		}
+
+	}
 }
