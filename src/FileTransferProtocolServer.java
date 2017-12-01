@@ -22,6 +22,7 @@ import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.security.spec.InvalidKeySpecException;
 import java.security.spec.X509EncodedKeySpec;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Random;
 
@@ -35,8 +36,16 @@ public class FileTransferProtocolServer {
 	private PrivateKey serverPrivateKey;
 	private long sessionKey, IV;
 	private byte[] encryptionKey;
+	private long sequenceNumber;
 	
-	
+	public long getSequenceNumber() {
+		return sequenceNumber;
+	}
+
+	public void setSequenceNumber(long sequenceNumber) {
+		this.sequenceNumber = sequenceNumber;
+	}
+
 	public long getSessionKey() {
 		return sessionKey;
 	}
@@ -75,7 +84,7 @@ public class FileTransferProtocolServer {
 		return random.nextLong();
 	}
 	
-	public void receiveFileFromClient(Socket socket, DataInputStream dis, String fileName) throws IOException, InvalidKeyException, NoSuchAlgorithmException, NoSuchPaddingException, IllegalBlockSizeException, BadPaddingException {
+	public void receiveFileFromClient(Socket socket, DataInputStream dis, String fileName) throws IOException, InvalidKeyException, NoSuchAlgorithmException, NoSuchPaddingException, IllegalBlockSizeException, BadPaddingException, InvalidKeySpecException {
 		// Client uploads file to server
 		
 		int IVlength = dis.readInt();
@@ -84,7 +93,7 @@ public class FileTransferProtocolServer {
 		if(IVlength>0){
 			dis.read(encryptedIV, 0, encryptedIV.length);
 			//dis.close();
-			
+			System.out.println("Encrypted IV at server: "+new String(encryptedIV));
 			//String encrypted = new String(data, 0, data.length);
 			//System.out.println(encrypted);
 			long decryptedNonce = this.decrypted(this.getServerPrivateKey(), encryptedIV);
@@ -96,79 +105,179 @@ public class FileTransferProtocolServer {
 		byte[] encryptionKey = this.longToBytes(encryptionNonce);
 		int encryptedDataLength = dis.readInt();
 		
-		FileOutputStream fos = new FileOutputStream(fileName);
+		File file = new File(fileName);
+		FileOutputStream fos = new FileOutputStream(file);
 		BufferedOutputStream bos = new BufferedOutputStream(fos);
 		
 		if(encryptedDataLength > 0) {
 			byte[] encryptedBlock = new byte[encryptedDataLength];
 			dis.read(encryptedBlock, 0, encryptedDataLength);
-			MessageDigest md = MessageDigest.getInstance("SHA1");
+			MessageDigest md = MessageDigest.getInstance("SHA-256");
 			byte[] concatEncrypted = new byte[encryptionKey.length + encryptedIV.length];
 			System.arraycopy(encryptedIV, 0, concatEncrypted, 0, encryptedIV.length);
 			System.arraycopy(encryptionKey, 0, concatEncrypted, encryptedIV.length, encryptionKey.length);
 			byte[] sha1HashConcat = md.digest(concatEncrypted);
 			byte[] plainText = xor(encryptedBlock, sha1HashConcat);
-			bos.write(plainText);
+			byte[] seqNo = Arrays.copyOfRange(plainText, 0, 8);
+			byte[] plainTextWithoutSeqNo = Arrays.copyOfRange(plainText, 8, plainText.length);
+			long seqNoLong = this.bytesToLong(seqNo);
+			this.setSequenceNumber(seqNoLong);
+			bos.write(plainTextWithoutSeqNo);
 			bos.flush();
-			
-			while((encryptedDataLength = dis.readInt()) > 0) {
-				byte[] cipherText = new byte[encryptedDataLength];
-				dis.read(cipherText, 0, encryptedDataLength);
-				concatEncrypted = new byte[encryptedBlock.length + encryptionKey.length];
-				System.arraycopy(encryptedBlock, 0, concatEncrypted, 0, encryptedBlock.length);
-				System.arraycopy(encryptionKey, 0, concatEncrypted, encryptedBlock.length, encryptionKey.length);
-				sha1HashConcat = md.digest(concatEncrypted);
-				plainText = xor(cipherText, sha1HashConcat);
-				bos.write(plainText, 0, encryptedDataLength);
-				bos.flush();
+			boolean changeKey = false;
+			while(true) {
+				changeKey = dis.readBoolean();
+				if(changeKey) {
+					receiveNonce(dis);
+					encryptionKey = this.getEncryptionKey();
+				}
+				if((encryptedDataLength = dis.readInt()) > 0) {
+					byte[] cipherText = new byte[encryptedDataLength];
+					dis.read(cipherText, 0, encryptedDataLength);
+					System.out.println("xored at server: "+new String(cipherText));
+					concatEncrypted = new byte[encryptedBlock.length + encryptionKey.length];
+					System.arraycopy(encryptedBlock, 0, concatEncrypted, 0, encryptedBlock.length);
+					System.arraycopy(encryptionKey, 0, concatEncrypted, encryptedBlock.length, encryptionKey.length);
+					sha1HashConcat = md.digest(concatEncrypted);
+					System.out.println("hash at server: "+new String(sha1HashConcat));
+					plainText = Arrays.copyOfRange(xor(cipherText, sha1HashConcat),0,encryptedDataLength);
+					seqNo = Arrays.copyOfRange(plainText, 0, 8);
+					seqNoLong = this.bytesToLong(seqNo);
+					if(!changeKey && seqNoLong - this.getSequenceNumber() != encryptedBlock.length) {
+						System.out.println("Invalid sequence number, rejecting transfer");
+						bos.close();
+						fos.close();
+						file.delete();
+					}
+					else{
+						plainTextWithoutSeqNo = Arrays.copyOfRange(plainText, 8, plainText.length);
+						System.out.println("Plaintext at server: "+new String(plainTextWithoutSeqNo));
+						bos.write(plainTextWithoutSeqNo, 0, plainTextWithoutSeqNo.length);
+						bos.flush();
+						encryptedBlock = cipherText;
+					}
+				}
+				else {
+					bos.close();
+					fos.close();
+					break;
+				}
 			}
-			bos.close();
-			fos.close();
 		}
 	}
 	
 	public void sendFileToClient(ServerSocket socket, DataInputStream dis, DataOutputStream dos, File file) throws InvalidKeyException, NoSuchAlgorithmException, NoSuchPaddingException, IllegalBlockSizeException, BadPaddingException, InvalidKeySpecException, IOException {
 		
 		this.receiveNonce(dis);
+//		int len = dis.readInt();
+//		if(len > 0) {
+//			byte[] encryptedIV = new byte[len];
+//			dis.read(encryptedIV, 0 , encryptedIV.length);
+//			
+//			FileInputStream fis = new FileInputStream(file.getAbsolutePath());
+//			BufferedInputStream bis = new BufferedInputStream(fis);
+//			long encryptionNonce = this.getEncryptionNonce(this.getSessionKey());
+//			byte[] encryptionKey = this.longToBytes(encryptionNonce);
+//			byte[] IVdataBlock = new byte[encryptedIV.length + encryptionKey.length];
+//			System.arraycopy(encryptedIV, 0, IVdataBlock, 0, encryptedIV.length);
+//			System.arraycopy(encryptionKey, 0, IVdataBlock, encryptedIV.length, encryptionKey.length);
+//			MessageDigest md = MessageDigest.getInstance("SHA-256");
+//			byte[] sha1Hash = md.digest(IVdataBlock);
+//			byte[] fileByte = new byte[32];
+//			int bytesRead = bis.read(fileByte, 0 , fileByte.length);
+//			byte[] xored = xor(fileByte, sha1Hash);
+//			dos.writeInt(bytesRead);
+//			dos.write(xored, 0, bytesRead);
+//			
+//			while(bytesRead != -1) {
+//				bytesRead = bis.read(fileByte, 0, bytesRead);
+//				if(bytesRead > 0) {
+//					byte[] hashedBlock = new byte[xored.length + encryptionKey.length];
+//					System.arraycopy(xored, 0, hashedBlock, 0, xored.length);
+//					System.arraycopy(encryptionKey, 0, hashedBlock, xored.length, encryptionKey.length);
+//					byte[] hashValue = md.digest(hashedBlock);
+//					byte[] cipherText = xor(fileByte, hashValue);
+//					dos.writeInt(bytesRead);
+//					dos.write(cipherText, 0 , bytesRead);
+//				}
+//			}
+//		}
+		
+		
 		int len = dis.readInt();
 		if(len > 0) {
 			byte[] encryptedIV = new byte[len];
-			dis.read(encryptedIV, 0 , encryptedIV.length);
-			System.out.println("At server, IV = "+this.decrypted(this.getServerPrivateKey(), encryptedIV));
-			
+			dis.read(encryptedIV, 0 , encryptedIV.length);			
+			long currentSeqNo = Math.abs(generateRandomNonce());
+			this.setSequenceNumber(currentSeqNo);
+			this.setIV(generateRandomNonce());
 			FileInputStream fis = new FileInputStream(file.getAbsolutePath());
 			BufferedInputStream bis = new BufferedInputStream(fis);
-			long encryptionNonce = this.getEncryptionNonce(this.getSessionKey());
-			System.out.println("Encryption nonce at server: "+encryptionNonce);
-			byte[] encryptionKey = this.longToBytes(encryptionNonce);
-			System.out.println("At server, encryption key: "+new String(encryptionKey));
-			byte[] IVdataBlock = new byte[encryptedIV.length + encryptionKey.length];
-			System.arraycopy(encryptedIV, 0, IVdataBlock, 0, encryptedIV.length);
-			System.arraycopy(encryptionKey, 0, IVdataBlock, encryptedIV.length, encryptionKey.length);
-			MessageDigest md = MessageDigest.getInstance("SHA1");
-			byte[] sha1Hash = md.digest(IVdataBlock);
-			byte[] fileByte = new byte[20];
+			byte[] encryptionKey = this.getEncryptionKey();
+			byte[] fileByte = new byte[24];
 			int bytesRead = bis.read(fileByte, 0 , fileByte.length);
-			System.out.println("At server, plaintext: "+new String(fileByte));
-			byte[] xored = xor(fileByte, sha1Hash);
-			dos.writeInt(xored.length);
-			dos.write(xored, 0, xored.length);
-			
-			while(bytesRead != -1) {
-				bytesRead = bis.read(fileByte, 0, bytesRead);
-				if(bytesRead > 0) {
-					byte[] hashedBlock = new byte[xored.length + encryptionKey.length];
-					System.arraycopy(xored, 0, hashedBlock, 0, xored.length);
-					System.arraycopy(encryptionKey, 0, hashedBlock, xored.length, encryptionKey.length);
-					byte[] hashValue = md.digest(hashedBlock);
-					byte[] cipherText = xor(fileByte, hashValue);
-					dos.writeInt(bytesRead);
-					dos.write(cipherText, 0 , bytesRead);
+			if(bytesRead > 0) {
+				System.out.println("Current seq at server: "+currentSeqNo);
+				byte[] seqNoBytes = this.longToBytes(currentSeqNo);
+				
+				System.out.println("Seq no bytes at server: "+new String(seqNoBytes));
+				byte[] seqNoWithFileData = new byte[bytesRead + seqNoBytes.length];
+				System.arraycopy(seqNoBytes, 0, seqNoWithFileData, 0, seqNoBytes.length);
+				System.arraycopy(fileByte, 0, seqNoWithFileData, seqNoBytes.length, bytesRead);
+				
+				byte[] IVdataBlock = new byte[encryptedIV.length + encryptionKey.length];
+				MessageDigest md = MessageDigest.getInstance("SHA-256");
+				System.arraycopy(encryptedIV, 0, IVdataBlock,0, encryptedIV.length);
+				System.arraycopy(encryptionKey, 0, IVdataBlock, encryptedIV.length, encryptionKey.length);
+				byte[] sha256Hash = md.digest(IVdataBlock);
+				
+				byte[] xored = xor(seqNoWithFileData, sha256Hash);
+				dos.writeInt(xored.length);
+				dos.write(xored, 0, xored.length);
+				
+				while(bytesRead != -1) {
+					bytesRead = bis.read(fileByte, 0, bytesRead);
+					if(bytesRead > 0) {
+						currentSeqNo = getNextSequenceNumber(xored.length, dos);
+						this.setSequenceNumber(currentSeqNo);
+						if(currentSeqNo < this.getSequenceNumber()) {
+							dos.writeBoolean(true);
+							this.keyRollOver(dos);
+						}
+						else {
+							dos.writeBoolean(false);
+						}
+						byte[] hashedBlock = new byte[xored.length + encryptionKey.length];
+						encryptionKey = this.getEncryptionKey();
+						
+						System.out.println("Plaintext at client: "+new String(fileByte));
+						
+						seqNoBytes = this.longToBytes(currentSeqNo);
+						
+						System.out.println("Seq no bytes at client: "+new String(seqNoBytes));
+						seqNoWithFileData = new byte[bytesRead + seqNoBytes.length];
+						System.arraycopy(seqNoBytes, 0, seqNoWithFileData, 0, seqNoBytes.length);
+						System.arraycopy(fileByte, 0, seqNoWithFileData, seqNoBytes.length, bytesRead);
+						
+						System.arraycopy(xored, 0, hashedBlock, 0, xored.length);
+						System.arraycopy(encryptionKey, 0, hashedBlock, xored.length, encryptionKey.length);
+						byte[] hashValue = md.digest(hashedBlock);
+						
+						System.out.println("Hash at client: "+new String(hashValue));
+						
+						xored = xor(seqNoWithFileData, hashValue);
+						
+						System.out.println("xored at client: "+new String(xored));
+						dos.writeInt(seqNoWithFileData.length);
+						dos.write(xored, 0 ,seqNoWithFileData.length);
+					}
 				}
+				FileServer.showMessage("\nFile has been uploaded successfully to the server!\n");
 			}
+			bis.close();
 		}
-		
 	}
+		
 	
 	public long decrypted(PrivateKey key, byte[] encrypted) throws NoSuchAlgorithmException, NoSuchPaddingException, InvalidKeyException, IllegalBlockSizeException, BadPaddingException {
 		//Decrypt the once
@@ -237,8 +346,52 @@ public class FileTransferProtocolServer {
 			
 			long decryptedNonce = this.decrypted(this.getServerPrivateKey(), data);
 			this.setSessionKey(decryptedNonce);
+			this.setEncryptionKey(this.longToBytes(this.getEncryptionNonce(decryptedNonce)));
 			FileServer.showMessage("The decrypted Nonce is: " + decryptedNonce + "\n\n");
 		}
 
 	}
+	private long getNextSequenceNumber(int dataLength, DataOutputStream dos) throws InvalidKeyException, NoSuchPaddingException, NoSuchAlgorithmException, BadPaddingException, IllegalBlockSizeException, IOException {
+		 
+		long seqNum = (this.getSequenceNumber() + dataLength) % Long.MAX_VALUE;
+		return seqNum;
+	 }
+
+	private void sendNonceToClient(long sessionKey, DataOutputStream dos) throws NoSuchAlgorithmException, IOException {
+		byte[] encryptionKey = this.getEncryptionKey();
+		byte[] sessionKeyBytes = this.longToBytes(sessionKey);
+		byte[] IV = this.longToBytes(this.getIV());
+		byte[] encryptedNonce = this.encryptWithSHA256(sessionKeyBytes, IV, encryptionKey);
+		dos.writeInt(encryptedNonce.length);
+		dos.write(encryptedNonce, 0, encryptedNonce.length);
+	}
+	private byte[] encryptWithSHA256(byte[] plainText, byte[] IVbytes, byte[] encryptionKey) throws NoSuchAlgorithmException {
+		
+		byte[] IVdataBlock = new byte[IVbytes.length + encryptionKey.length];
+		System.arraycopy(IVbytes, 0, IVdataBlock, 0, IVbytes.length);
+		System.arraycopy(encryptionKey, 0, IVdataBlock, IVbytes.length, encryptionKey.length);
+		MessageDigest md = MessageDigest.getInstance("SHA1");
+		byte[] sha1Hash = md.digest(IVdataBlock);
+		return xor(plainText, sha1Hash);
+	}
+
+	public byte[] encrypted(long rand, PublicKey key) throws NoSuchPaddingException, NoSuchAlgorithmException, InvalidKeyException, BadPaddingException, IllegalBlockSizeException, IOException  {
+		//Encrypt the nonce
+		//String text = "This is the session key. It is encrypted using server's public key and will be decrypted by the server using its private key!";
+		Cipher ci = Cipher.getInstance("RSA");
+		ci.init(Cipher.ENCRYPT_MODE, key);
+		FileServer.showMessage("\nThe randomly generated nonce is: " + rand+"\n");
+		byte[] encrypted = ci.doFinal(longToBytes(rand));
+		//System.err.println(new String(encrypted));
+		//System.out.println(new String(encrypted));
+		//dos.writeInt(1);
+		//dos.flush();
+		return encrypted;				
+	}
+	private void keyRollOver(DataOutputStream dos) throws IOException, InvalidKeyException, NoSuchPaddingException, NoSuchAlgorithmException, BadPaddingException, IllegalBlockSizeException {
+		 this.setSessionKey(this.generateRandomNonce());
+		 this.setEncryptionKey(this.longToBytes(this.getEncryptionNonce(this.getSessionKey())));
+		 dos.writeBoolean(true);
+		 sendNonceToClient(this.getSessionKey(), dos);
+	 }
 }

@@ -76,11 +76,14 @@ public class FileServer extends JFrame {
 				try{
 					waitForConnection();	//Function for listening and accepting incoming connections
 					setupStreams();			//Function for setting up i/p & o/p streams
-//					receiveNonce(dis);
-//					receiveFromClient();		
+					protocol.receiveNonce(dis);
 					String option = dis.readUTF();
+					if(option.equals("upload")) {
+						String fileName = dis.readUTF();
+						protocol.receiveFileFromClient(clientSocket, dis, fileName);
+					}
 					
-					if(option.equals("List Server Files")) {
+					else if(option.equals("List Server Files")) {
 						File homeDir = new File(".");
 						String fileNamesStr = "\n";
 						int i = 0;
@@ -120,7 +123,7 @@ public class FileServer extends JFrame {
 
 
 
-	private void receiveFromClient() throws IOException, ClassNotFoundException, InvalidKeyException, NoSuchAlgorithmException, NoSuchPaddingException, IllegalBlockSizeException, BadPaddingException {
+	private void receiveFromClient() throws IOException, ClassNotFoundException, InvalidKeyException, NoSuchAlgorithmException, NoSuchPaddingException, IllegalBlockSizeException, BadPaddingException, InvalidKeySpecException {
 		String message = "-----------------------------------------" 
 				+ "-----------------------------------------";
 		showMessage(message);
