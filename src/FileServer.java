@@ -72,46 +72,44 @@ public class FileServer extends JFrame {
 	public void  startRunning() throws InvalidKeyException, NoSuchAlgorithmException, NoSuchPaddingException, IllegalBlockSizeException, BadPaddingException, InvalidKeySpecException{
 		try{
 			socket = new ServerSocket(PORT);
-			while(true){
-				try{
-					waitForConnection();	//Function for listening and accepting incoming connections
-					setupStreams();			//Function for setting up i/p & o/p streams
-					protocol.receiveNonce(dis);
-					String option = dis.readUTF();
-					if(option.equals("upload")) {
-						String fileName = dis.readUTF();
-						protocol.receiveFileFromClient(clientSocket, dis, fileName);
-					}
-					
-					else if(option.equals("List Server Files")) {
-						File homeDir = new File(".");
-						String fileNamesStr = "\n";
-						int i = 0;
-						for(File file: homeDir.listFiles()) {
-							if(!file.isDirectory() && !file.isHidden()) {
-								fileNamesStr = fileNamesStr.concat(file.getName()).concat("\t");
-							}
+			waitForConnection();	//Function for listening and accepting incoming connections
+			setupStreams();			//Function for setting up i/p & o/p streams
+			protocol.receiveNonce(dis);
+			String option;
+			while(true) {
+				option = dis.readUTF();
+				if(option.equals("upload")) {
+					String fileName = dis.readUTF();
+					protocol.receiveFileFromClient(clientSocket, dis, fileName);
+				}
+				
+				else if(option.equals("List Server Files")) {
+					File homeDir = new File(".");
+					String fileNamesStr = "\n";
+					for(File file: homeDir.listFiles()) {
+						if(!file.isDirectory() && !file.isHidden()) {
+							fileNamesStr = fileNamesStr.concat(file.getName()).concat("\t");
 						}
-						System.out.println("File names: \n"+fileNamesStr);
-						dos.writeUTF(fileNamesStr);
-						String fileName = dis.readUTF();
-						File file = new File(fileName);
-						protocol.sendFileToClient(socket, dis, dos, file);
 					}
-					
-					//sendCertificate();
-				} catch (EOFException e){
-					showMessage("\n Connection terminated!");    //When user disconnects
+					System.out.println("File names: \n"+fileNamesStr);
+					dos.writeUTF(fileNamesStr);
+					String fileName = dis.readUTF();
+					File file = new File(fileName);
+					protocol.sendFileToClient(socket, dis, dos, file);
+				}
+				
+			}
+			//sendCertificate();
+			} catch (EOFException e){
+				showMessage("\n Connection terminated!");    //When user disconnects
 //				} catch (ClassNotFoundException e) {
 //					// TODO Auto-generated catch block
 //					e.printStackTrace();
-				} finally {
-					closeAllConnections();						//Function to close all streams	
-				}
-			}
-		} catch (IOException ioe) {
-			ioe.printStackTrace();							// Print the exceptions in case an exception occurs
-		}
+			} catch (IOException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}//sendCertificate();
+			
 	}	
 
 	//wait for user to connect
