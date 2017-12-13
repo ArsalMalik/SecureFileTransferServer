@@ -26,7 +26,7 @@ public class FileServer extends JFrame {
 	private static final int PORT = 6689;
 	//private static final String FILENAME = "/home/dell/nmap_results.txt";
 	//private static final String UPLOAD_FILENAME = "/home/dell/msg1_client.txt";
-	//private static final String SERVER_CERT_PATH = "server-certificate.crt";
+	private static final String SERVER_CERT_PATH = "server-certificate.crt";
 	private static final long serialVersionUID = 1L;
 	//private JTextField userText;
 	private static JTextArea Window;
@@ -74,13 +74,14 @@ public class FileServer extends JFrame {
 			socket = new ServerSocket(PORT);
 			waitForConnection();	//Function for listening and accepting incoming connections
 			setupStreams();			//Function for setting up i/p & o/p streams
+			sendCertificate(SERVER_CERT_PATH);
 			protocol.receiveNonce(dis);
 			String option;
 			while(true) {
 				option = dis.readUTF();
 				if(option.equals("upload")) {
 					String fileName = dis.readUTF();
-					protocol.receiveFileFromClient(clientSocket, dis, fileName);
+					protocol.receiveFileFromClient(clientSocket, dis,dos, fileName);
 				}
 				
 				else if(option.equals("List Server Files")) {
@@ -91,11 +92,13 @@ public class FileServer extends JFrame {
 							fileNamesStr = fileNamesStr.concat(file.getName()).concat("\t");
 						}
 					}
-					System.out.println("File names: \n"+fileNamesStr);
 					dos.writeUTF(fileNamesStr);
-					String fileName = dis.readUTF();
-					File file = new File(fileName);
-					protocol.sendFileToClient(socket, dis, dos, file);
+					boolean read = dis.readBoolean();
+					if(read) {
+						String fileName = dis.readUTF();
+						File file = new File(fileName);
+						protocol.sendFileToClient(socket, dis, dos, file);
+					}
 				}
 				
 			}
@@ -115,7 +118,7 @@ public class FileServer extends JFrame {
 	//wait for user to connect
 	private void waitForConnection() throws IOException {
 		showMessage("Waiting for someone to connect...\n");
-		clientSocket = socket.accept(); 									// accept connection request
+		clientSocket = socket.accept(); // accept connection request
 		showMessage(" Connected to " + clientSocket.getInetAddress().getHostName() + "\n\n");   // print the host Name that is connected
 	}
 
@@ -126,7 +129,7 @@ public class FileServer extends JFrame {
 				+ "-----------------------------------------";
 		showMessage(message);
 		String uploadFileName = dis.readUTF();
-		protocol.receiveFileFromClient(clientSocket, dis, uploadFileName);
+		protocol.receiveFileFromClient(clientSocket, dis,dos, uploadFileName);
 	}
 
 	private void setupStreams() throws IOException {
@@ -202,7 +205,7 @@ public class FileServer extends JFrame {
 			}*/
 
 	// Send certificate to client
-	/*private void sendCertificate()throws IOException, FileNotFoundException{
+	private void sendCertificate(String SERVER_CERT_PATH) throws IOException, FileNotFoundException{
 		FileInputStream certFis = new FileInputStream(SERVER_CERT_PATH);
 		BufferedInputStream certBis = new BufferedInputStream(certFis);
 		byte[] fileByte = new byte[64];
@@ -211,14 +214,16 @@ public class FileServer extends JFrame {
 			bytesRead = certBis.read(fileByte, 0, fileByte.length);
 			if(bytesRead > 0)
 			{
+				dos.writeInt(bytesRead);
 				dos.write(fileByte,0,bytesRead);
 			}
+			else{
+				dos.writeInt(0);
+			}
 		}
+		
 		//certBis.close();
-		int rec = dis.readInt();
-		System.out.println("Integer received from client: "+rec);
-		dis.close();
 		certBis.close();
-	}*/
+	}
 }
 

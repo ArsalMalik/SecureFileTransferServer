@@ -32,12 +32,13 @@ import javax.crypto.IllegalBlockSizeException;
 import javax.crypto.Mac;
 import javax.crypto.NoSuchPaddingException;
 import javax.crypto.spec.SecretKeySpec;
+import javax.sound.midi.Sequence;
 
 public class FileTransferProtocolServer {
 	
 	private PrivateKey serverPrivateKey;
 	private long sessionKey, IV;
-	private byte[] encryptionKey;
+	private byte[] encryptionKey, integrityKey;
 	private long sequenceNumber;
 	private static String hashAlgorithm = "HmacSHA256";
 	
@@ -81,13 +82,21 @@ public class FileTransferProtocolServer {
 		this.encryptionKey = encryptionKey;
 	}
 
+	public byte[] getIntegrityKey() {
+		return integrityKey;
+	}
+
+	public void setIntegrityKey(byte[] integrityKey) {
+		this.integrityKey = integrityKey;
+	}
+
 	public long generateRandomNonce() {
 		
 		SecureRandom random = new SecureRandom();
 		return random.nextLong();
 	}
 	
-	public void receiveFileFromClient(Socket socket, DataInputStream dis, String fileName) throws IOException, InvalidKeyException, NoSuchAlgorithmException, NoSuchPaddingException, IllegalBlockSizeException, BadPaddingException, InvalidKeySpecException {
+	public void receiveFileFromClient(Socket socket, DataInputStream dis, DataOutputStream dos, String fileName) throws IOException, InvalidKeyException, NoSuchAlgorithmException, NoSuchPaddingException, IllegalBlockSizeException, BadPaddingException, InvalidKeySpecException {
 		// Client uploads file to server
 		
 		int IVlength = dis.readInt();
@@ -95,21 +104,17 @@ public class FileTransferProtocolServer {
 		
 		if(IVlength>0){
 			dis.read(encryptedIV, 0, encryptedIV.length);
-			//dis.close();
-			System.out.println("Encrypted IV at server: "+new String(encryptedIV));
-			//String encrypted = new String(data, 0, data.length);
-			//System.out.println(encrypted);
 			long decryptedNonce = this.decrypted(this.getServerPrivateKey(), encryptedIV);
 			this.setIV(decryptedNonce);
-			FileServer.showMessage("The decrypted IV is: " + decryptedNonce + "\n\n");
 		}
 		
 		Mac sha256Hmac = Mac.getInstance(hashAlgorithm);
-		SecretKeySpec secretKey = new SecretKeySpec(encryptionKey,hashAlgorithm);
+		SecretKeySpec secretKey = new SecretKeySpec(this.getEncryptionKey(),hashAlgorithm);
 		sha256Hmac.init(secretKey);
 		
-		long encryptionNonce = this.getEncryptionNonce(this.getSessionKey());
-		byte[] encryptionKey = this.longToBytes(encryptionNonce);
+		Mac integrityHmac = Mac.getInstance(hashAlgorithm);
+		SecretKeySpec integritySecretKey = new SecretKeySpec(this.getIntegrityKey(), hashAlgorithm);
+		integrityHmac.init(integritySecretKey);
 		int encryptedDataLength = dis.readInt();
 		
 		File file = new File(fileName);
@@ -117,16 +122,30 @@ public class FileTransferProtocolServer {
 		BufferedOutputStream bos = new BufferedOutputStream(fos);
 		
 		if(encryptedDataLength > 0) {
-			byte[] encryptedBlock = new byte[encryptedDataLength];
-			dis.read(encryptedBlock, 0, encryptedDataLength);
-//			MessageDigest md = MessageDigest.getInstance("SHA-256");
-//			byte[] concatEncrypted = new byte[encryptionKey.length + encryptedIV.length];
-//			System.arraycopy(encryptedIV, 0, concatEncrypted, 0, encryptedIV.length);
-//			System.arraycopy(encryptionKey, 0, concatEncrypted, encryptedIV.length, encryptionKey.length);
-			
-//			byte[] sha1HashConcat = md.digest(concatEncrypted);
+			byte[] encryptedBlockWithMac = new byte[encryptedDataLength];
+			dis.read(encryptedBlockWithMac, 0, encryptedDataLength);
+			byte[] integrityHmacArr = new byte[32];
 			byte[] hmacArr = sha256Hmac.doFinal(encryptedIV);
-			byte[] plainText = xor(encryptedBlock, hmacArr);
+			byte[] hashLong = new byte[encryptedDataLength - 32];
+			for(int i = 0; i < hashLong.length; i++) {
+				hashLong[i] = hmacArr[i%32];
+			}
+			byte[] cipherText = new byte[encryptedBlockWithMac.length - 32];
+			
+			cipherText = Arrays.copyOfRange(encryptedBlockWithMac, 0, cipherText.length);
+			integrityHmacArr = Arrays.copyOfRange(encryptedBlockWithMac, cipherText.length,encryptedBlockWithMac.length);
+			byte[] localIntegrityMacArr = integrityHmac.doFinal(cipherText);
+			if(!Arrays.equals(localIntegrityMacArr, integrityHmacArr)) {
+				dos.writeUTF("reject");
+				bos.close();
+				fos.close();
+				file.delete();
+			}
+			else {
+				dos.writeUTF("good");
+			}
+			byte[] encryptedBlock = cipherText;
+			byte[] plainText = xor(cipherText, hashLong);
 			byte[] seqNo = Arrays.copyOfRange(plainText, 0, 8);
 			byte[] plainTextWithoutSeqNo = Arrays.copyOfRange(plainText, 8, plainText.length);
 			long seqNoLong = this.bytesToLong(seqNo);
@@ -136,7 +155,11 @@ public class FileTransferProtocolServer {
 			boolean changeKey = false;
 			String exitStr = null;
 			while(true) {
-				exitStr = dis.readUTF();
+				try{
+					exitStr = dis.readUTF();
+				}catch(Exception e) {
+					e.printStackTrace();
+				}
 				if(exitStr != null && exitStr.equals("close")) {
 					break;
 				}
@@ -145,26 +168,30 @@ public class FileTransferProtocolServer {
 					receiveNonce(dis);
 					encryptionKey = this.getEncryptionKey();
 					secretKey = new SecretKeySpec(encryptionKey, hashAlgorithm);
+					integritySecretKey = new SecretKeySpec(this.getIntegrityKey(), hashAlgorithm);
 					sha256Hmac.init(secretKey);
+					integrityHmac.init(integritySecretKey);
 				}
 				encryptedDataLength = dis.readInt();
 				if(encryptedDataLength > 0) {
-					byte[] cipherText = new byte[encryptedDataLength];
-					dis.read(cipherText, 0, encryptedDataLength);
-//					System.out.println("xored at server: "+new String(cipherText));
-//					concatEncrypted = new byte[encryptedBlock.length + encryptionKey.length];
-//					System.arraycopy(encryptedBlock, 0, concatEncrypted, 0, encryptedBlock.length);
-//					System.arraycopy(encryptionKey, 0, concatEncrypted, encryptedBlock.length, encryptionKey.length);
-//					sha1HashConcat = md.digest(concatEncrypted);
-//					System.out.println("hash at server: "+new String(sha1HashConcat));
-					hmacArr = sha256Hmac.doFinal(encryptedBlock);
-					plainText = Arrays.copyOfRange(xor(cipherText,hmacArr),0, encryptedDataLength);
-					
-//					plainText = Arrays.copyOfRange(xor(cipherText, sha1HashConcat),0,encryptedDataLength);
+					byte[] cipherTextWithMac = new byte[encryptedDataLength];
+					dis.read(cipherTextWithMac, 0, encryptedDataLength);
+					cipherText = Arrays.copyOfRange(cipherTextWithMac,0, cipherTextWithMac.length - 32);
+					byte[] integrityMacArr = Arrays.copyOfRange(cipherTextWithMac, cipherTextWithMac.length - 32, cipherTextWithMac.length);
+					localIntegrityMacArr = integrityHmac.doFinal(cipherText);
+					if(!Arrays.equals(localIntegrityMacArr, integrityMacArr)){
+						break;
+					}
+					hmacArr = sha256Hmac.doFinal(encryptedBlock);	
+					for(int i = 0; i < cipherText.length; i++) {
+						hashLong[i] = hmacArr[i%32];
+					}
+					plainText = xor(cipherText, hashLong);
 					seqNo = Arrays.copyOfRange(plainText, 0, 8);
 					seqNoLong = this.bytesToLong(seqNo);
 					if(!changeKey && seqNoLong - this.getSequenceNumber() != encryptedBlock.length) {
 						FileServer.showMessage("Invalid sequence number, rejecting transfer");
+						dos.writeUTF("reject");
 						bos.close();
 						fos.close();
 						file.delete();
@@ -173,10 +200,10 @@ public class FileTransferProtocolServer {
 					else{
 						this.setSequenceNumber(seqNoLong);
 						plainTextWithoutSeqNo = Arrays.copyOfRange(plainText, 8, plainText.length);
-//						System.out.println("Plaintext at server: "+new String(plainTextWithoutSeqNo));
 						bos.write(plainTextWithoutSeqNo, 0, plainTextWithoutSeqNo.length);
 						bos.flush();
 						encryptedBlock = cipherText;
+						dos.writeUTF("good");
 					}
 				}
 				else {
@@ -201,14 +228,11 @@ public class FileTransferProtocolServer {
 			this.setIV(generateRandomNonce());
 			FileInputStream fis = new FileInputStream(file.getAbsolutePath());
 			BufferedInputStream bis = new BufferedInputStream(fis);
-			byte[] encryptionKey = this.getEncryptionKey();
-			byte[] fileByte = new byte[248];
+			byte[] fileByte = new byte[1024];
 			int bytesRead = bis.read(fileByte, 0 , fileByte.length);
 			if(bytesRead > 0) {
-				System.out.println("Current seq at server: "+currentSeqNo);
 				byte[] seqNoBytes = this.longToBytes(currentSeqNo);
 				
-				System.out.println("Seq no bytes at server: "+new String(seqNoBytes));
 				byte[] seqNoWithFileData = new byte[bytesRead + seqNoBytes.length];
 				System.arraycopy(seqNoBytes, 0, seqNoWithFileData, 0, seqNoBytes.length);
 				System.arraycopy(fileByte, 0, seqNoWithFileData, seqNoBytes.length, bytesRead);
@@ -216,61 +240,76 @@ public class FileTransferProtocolServer {
 				Mac sha256HashMac = Mac.getInstance(hashAlgorithm);
 				SecretKeySpec secretKey = new SecretKeySpec(this.getEncryptionKey(), hashAlgorithm);
 				sha256HashMac.init(secretKey);
+				
+				Mac integrityMac = Mac.getInstance(hashAlgorithm);
+				SecretKeySpec integritySecretKey = new SecretKeySpec(this.getIntegrityKey(),hashAlgorithm);
+				integrityMac.init(integritySecretKey);
+				
 				byte[] hashArr = sha256HashMac.doFinal(encryptedIV);
-				
-//				byte[] IVdataBlock = new byte[encryptedIV.length + encryptionKey.length];
-//				MessageDigest md = MessageDigest.getInstance("SHA-256");
-//				System.arraycopy(encryptedIV, 0, IVdataBlock,0, encryptedIV.length);
-//				System.arraycopy(encryptionKey, 0, IVdataBlock, encryptedIV.length, encryptionKey.length);
-//				byte[] sha256Hash = md.digest(IVdataBlock);
-				
-				byte[] xored = xor(seqNoWithFileData, hashArr);
-				dos.writeInt(xored.length);
-				dos.write(xored, 0, xored.length);
-				
-				while(bytesRead != -1) {
-					bytesRead = bis.read(fileByte, 0, bytesRead);
-					if(bytesRead > 0) {
-						dos.writeUTF("running");
-						currentSeqNo = getNextSequenceNumber(xored.length, dos);
-						this.setSequenceNumber(currentSeqNo);
-						if(currentSeqNo < this.getSequenceNumber()) {
-							dos.writeBoolean(true);
-							this.keyRollOver(dos);
-							secretKey = new SecretKeySpec(this.getEncryptionKey(),hashAlgorithm);
-							sha256HashMac.init(secretKey);
-						}
-						else {
-							dos.writeBoolean(false);
-						}
-//						byte[] hashedBlock = new byte[xored.length + encryptionKey.length];
-						encryptionKey = this.getEncryptionKey();
-						
-						System.out.println("Plaintext at server: "+new String(fileByte));
-						
-						seqNoBytes = this.longToBytes(currentSeqNo);
-						
-						System.out.println("Seq no bytes at server: "+new String(seqNoBytes));
-						seqNoWithFileData = new byte[bytesRead + seqNoBytes.length];
-						System.arraycopy(seqNoBytes, 0, seqNoWithFileData, 0, seqNoBytes.length);
-						System.arraycopy(fileByte, 0, seqNoWithFileData, seqNoBytes.length, bytesRead);
-						
-						hashArr = sha256HashMac.doFinal(xored);
-//						System.arraycopy(xored, 0, hashedBlock, 0, xored.length);
-//						System.arraycopy(encryptionKey, 0, hashedBlock, xored.length, encryptionKey.length);
-//						byte[] hashValue = md.digest(hashedBlock);
-						
-//						System.out.println("Hash at server: "+new String(hashValue));
-						
-						xored = xor(seqNoWithFileData, hashArr);
-						
-						System.out.println("xored at server: "+new String(xored));
-						dos.writeInt(seqNoWithFileData.length);
-						dos.write(xored, 0 ,seqNoWithFileData.length);
-					}
+				byte[] hashLong = new byte[seqNoWithFileData.length];
+				for(int i = 0; i < hashLong.length; i++) {
+					hashLong[i] = hashArr[i%32];
 				}
-				dos.writeUTF("close");
-				FileServer.showMessage("\nFile has been uploaded successfully to the server!\n");
+				byte[] xored = xor(seqNoWithFileData, Arrays.copyOfRange(hashLong,0, seqNoWithFileData.length));
+				byte[] integrityHmacArr = integrityMac.doFinal(Arrays.copyOfRange(xored, 0, seqNoWithFileData.length));
+				
+				byte[] xoredWithMacArr = new byte[xored.length + integrityHmacArr.length]; 
+				System.arraycopy(xored, 0, xoredWithMacArr,0, seqNoWithFileData.length);
+				System.arraycopy(integrityHmacArr, 0, xoredWithMacArr, seqNoWithFileData.length, integrityHmacArr.length);
+				dos.writeInt(seqNoWithFileData.length + integrityHmacArr.length);
+				dos.write(xoredWithMacArr, 0, seqNoWithFileData.length + integrityHmacArr.length);
+				String goodData = dis.readUTF();
+				boolean transferDone = true;
+				if(goodData.equals("good")) {
+					while(bytesRead != -1) {
+						bytesRead = bis.read(fileByte, 0, bytesRead);
+						if(bytesRead > 0) {
+							dos.writeUTF("running");
+							currentSeqNo = getNextSequenceNumber(xored.length, dos);
+							this.setSequenceNumber(currentSeqNo);
+							if(currentSeqNo < this.getSequenceNumber()) {
+								dos.writeBoolean(true);
+								this.keyRollOver(dos);
+								secretKey = new SecretKeySpec(this.getEncryptionKey(),hashAlgorithm);
+								sha256HashMac.init(secretKey);
+							}
+							else {
+								dos.writeBoolean(false);
+							}
+							encryptionKey = this.getEncryptionKey();
+							
+							seqNoBytes = this.longToBytes(currentSeqNo);
+							
+							seqNoWithFileData = new byte[bytesRead + seqNoBytes.length];
+							System.arraycopy(seqNoBytes, 0, seqNoWithFileData, 0, seqNoBytes.length);
+							System.arraycopy(fileByte, 0, seqNoWithFileData, seqNoBytes.length, bytesRead);
+							
+							hashArr = sha256HashMac.doFinal(xored);
+							for(int i = 0; i < seqNoWithFileData.length; i++) {
+								hashLong[i] = hashArr[i%32];
+							}
+							xored = xor(seqNoWithFileData, Arrays.copyOfRange(hashLong, 0,seqNoWithFileData.length));
+							integrityHmacArr = integrityMac.doFinal(Arrays.copyOfRange(xored, 0, seqNoWithFileData.length));
+							
+							System.arraycopy(xored, 0, xoredWithMacArr, 0, seqNoWithFileData.length);
+							System.arraycopy(integrityHmacArr, 0, xoredWithMacArr,seqNoWithFileData.length, integrityHmacArr.length);
+							dos.writeInt(seqNoWithFileData.length + integrityHmacArr.length);
+							dos.write(xoredWithMacArr, 0 ,seqNoWithFileData.length + integrityHmacArr.length);
+							if(!((goodData = dis.readUTF()).equals("good"))){
+								FileServer.showMessage("\nError in file transfer!");
+								transferDone = false;
+								break;
+							}
+						}
+					}
+					if(transferDone) {
+						FileServer.showMessage("\n File transfer completed successfully");
+					}
+					dos.writeUTF("close");
+				}
+				else {
+					FileServer.showMessage("\nError in file transfer");
+				}
 			}
 			bis.close();
 		}
@@ -281,7 +320,6 @@ public class FileTransferProtocolServer {
 		//Decrypt the once
 		Cipher ci = Cipher.getInstance("RSA");	
 		ci.init(Cipher.DECRYPT_MODE, key);
-		System.out.println("Encrypted data length at server: "+encrypted.length);
 		byte[] decrypted = ci.doFinal(encrypted);
 		long ldecrypted = bytesToLong(decrypted);
 		//System.err.println(decrypted);
@@ -311,7 +349,7 @@ public class FileTransferProtocolServer {
 		}
 		return sessionKey + 1;
 	}
-	public long getIntegrityKey(long sessionKey) {
+	public long getIntegrityNonce(long sessionKey) {
 		if(sessionKey > 0) {
 			return sessionKey - 2;
 		}
@@ -345,9 +383,11 @@ public class FileTransferProtocolServer {
 			long decryptedNonce = this.decrypted(this.getServerPrivateKey(), data);
 			this.setSessionKey(decryptedNonce);
 			this.setEncryptionKey(this.longToBytes(this.getEncryptionNonce(decryptedNonce)));
+			this.setIntegrityKey(this.longToBytes(this.getIntegrityNonce(decryptedNonce)));
 		}
 
 	}
+
 	private long getNextSequenceNumber(int dataLength, DataOutputStream dos) throws InvalidKeyException, NoSuchPaddingException, NoSuchAlgorithmException, BadPaddingException, IllegalBlockSizeException, IOException {
 		 
 		long seqNum = (this.getSequenceNumber() + dataLength) % Long.MAX_VALUE;
@@ -387,7 +427,8 @@ public class FileTransferProtocolServer {
 	private void keyRollOver(DataOutputStream dos) throws IOException, InvalidKeyException, NoSuchPaddingException, NoSuchAlgorithmException, BadPaddingException, IllegalBlockSizeException {
 		 this.setSessionKey(this.generateRandomNonce());
 		 this.setEncryptionKey(this.longToBytes(this.getEncryptionNonce(this.getSessionKey())));
+		 this.setIntegrityKey(this.longToBytes(this.getIntegrityNonce(this.getSessionKey())));
 		 dos.writeBoolean(true);
 		 sendNonceToClient(this.getSessionKey(), dos);
-	 }
+	}
 }
